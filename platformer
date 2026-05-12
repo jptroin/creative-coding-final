@@ -1,0 +1,634 @@
+let worldSwayVal = 0;
+let worldSway = [0,0]; //center position of sway offset
+
+let worldShake = [0,0]; //center position of shake offset
+let shakeLength = 20; //amount of frames during shake
+let shakeIntensity = 5; //intensity of shake effect
+	
+let windowWidth = 800;
+let windowHeight = 500;
+let floorHeight = 100;
+let timer = 0;
+
+//game entities
+let player;
+let enemyTimer = 100;
+let enemyList = []; //non player entity list (enemies and crates)
+let platformTimer = 0;
+let platformList = [];
+let particleFXList = [];
+let projectilesList = [];
+
+function updateWorldSway() { //updates worldSway position, follows an infinity pattern modelled with trig
+	worldSway[0] = sin(worldSwayVal / 100) * 10;
+	worldSway[1] = sin(worldSwayVal / 50) * 10;
+	++worldSwayVal;
+}
+
+function updateWorldShake(shakeStart, timer) { //updates world shake position if shake length has not been reached
+	if (timer - shakeStart < shakeLength) { // shake still happening
+		worldShake[0] = random(-1 * shakeIntensity, shakeIntensity);
+		worldShake[1] = random(-1 * shakeIntensity, shakeIntensity);
+	} else { //no shaking right now, reset screen coordinates
+		worldShake = [0,0];
+	}
+}
+
+function setup() {
+	createCanvas(windowWidth, windowHeight);
+	background(255);
+	player = new Player();
+}
+
+let shakeStart; //tracks start of world shake
+	
+function draw() {
+	if (platformTimer <= 0) {
+		platformList.push(new Platform(random() > 0.5 ? 0 : 1, //left vs right side spawn
+									          int(random(100,250)), //width range
+									          height - floorHeight - (100 * int(random(1,4))), //height spawn range
+									          int(random(1,5)))); //absolute speed
+		platformTimer = int(random(200, 500));
+	} else {
+		--platformTimer;
+		//console.log(platformTimer);
+	}
+	if (enemyTimer <= 0) {
+		enemyList.push(new Enemy(random() > 0.5 ? 0 : 1, //left vs right side spawn
+										 int(random(1,5)))); //enemy type
+		difficulty = timer / 1000; //spawns more often the longer the game runs
+		enemyTimer = int(300 - difficulty);
+	} else {
+		--enemyTimer;
+	}
+	clear();
+	//render floor
+	fill(0);
+	rect(-20, height - floorHeight + worldSway[1] + worldShake[1], width + 40, floorHeight + 20);
+
+	// update world sway and shake position
+	updateWorldSway();
+	updateWorldShake(shakeStart, timer)
+	
+	// update and/or render platforms
+	for (i = 0; i < platformList.length; ++i) {
+		if (platformList[i].update()) { //entity is active
+			platformList[i].render();
+		} else { //entity is no longer active
+			platformList.splice(i,1);
+		}
+	}
+
+	// update and render enemies
+	for (i = 0; i < enemyList.length; ++i) {
+		enemyList[i].update();
+		enemyList[i].render();
+		if (enemyList[i].isAlive() == false && enemyList[i].isDeathOver()) {
+			enemyList.splice(i,1);
+		}
+	}
+
+	// update and render projectiles
+	for (i = 0; i < projectilesList.length; ++i) {
+		if (projectilesList[i].update()) {
+			projectilesList[i].render();
+		} else {
+			projectilesList.splice(i,1);
+		}
+	}
+
+	// update and render particles
+	for (i = 0; i < particleFXList.length; ++i) {
+		if (particleFXList[i].update()) {
+			particleFXList[i].render();
+		} else {
+			particleFXList.splice(i,1);
+		}
+	}
+	
+	let killList = player.update(platformList, enemyList, projectilesList);
+	for (i = 0; i < killList.length; ++i) {
+		enemyList[killList[i]].die();
+
+		shakeStart = timer;
+		
+		let deadEnemy = enemyList[killList[i]];
+		//create death effect particles
+		let c;
+		if (deadEnemy.type == 1) {
+			c = color('green');
+		} else if (deadEnemy.type == 2) {
+			c = color('pink'); 
+		} else if (deadEnemy.type == 3) {
+			c = color('red'); 
+		} else {
+			c = color('grey');
+		}
+		particleFXList.push(new DeathEffect(deadEnemy.x + (deadEnemy.enemyWidth / 2), 
+														deadEnemy.y + (deadEnemy.enemyHeight / 2),
+														c));
+	}
+
+	//display combo and score
+	let scoreStr = "Score: " + player.score
+	let comboStr = "COMBO X" + player.combo 
+	fill(0);
+	textAlign(LEFT, TOP);
+	textSize(20);
+	text(scoreStr, 10, 10);
+	if (player.combo > 0) {
+		textSize(32);
+		text(comboStr, 10, 40);
+	}
+	
+	
+	if (player.gameOver) {
+		fill('red');
+		textSize(100);
+		textAlign(CENTER, CENTER);
+		text("GAME OVER", width/2, height/2)
+		noLoop();
+	}
+	player.render();	
+	timer += 1;
+}
+
+class Player {
+	constructor() {
+		//player size (length of one side)
+		this.pLength = 50;
+		//top left corner position
+		this.x = width / 2;
+		this.y = height / 2;
+		//velocity
+		this.vX = 0;
+		this.vY = 0;
+
+		this.gAcc = 1; //gravitational acceleration
+		this.drag = 0.9; //horizontal drag constant
+		this.jumpV = -20; //instantanious upwards velocity during jump
+		this.footHold = false; //whether the player can jump or slam
+		this.gameOver = false; //switches on enemy hit
+		
+		this.abAX = 1; //absolute horizontal acceleration
+		this.maxSpeedX = 9; //max absolute horizontal speed
+
+		this.score = 0;
+		this.combo = 0;
+	}
+	
+	updateControls() {
+		if (keyIsDown(LEFT_ARROW)) {
+			this.vX -= this.abAX;
+			if (this.vX < -1 * this.maxSpeedX) {
+				this.vX = -1 * this.maxSpeedX;
+			}
+		}
+		if (keyIsDown(RIGHT_ARROW)) {
+			this.vX += this.abAX;
+			if (this.vX > this.maxSpeedX) {
+				this.vX = this.maxSpeedX;
+			}
+		}
+		if (keyIsDown(UP_ARROW) && this.footHold) {
+			this.vY = this.jumpV;
+		}
+		if (keyIsDown(DOWN_ARROW) && !this.footHold) {
+			this.vX = 0;
+			this.vY = 0;
+		}
+	}
+
+	updateFloorCollision() {
+		if (this.y + this.pLength + this.vY > height - floorHeight) { //player lands on floor next frame
+			this.y = height - floorHeight - this.pLength;
+			this.vY = 0;
+			this.footHold = true;
+			//console.log("foothold");
+			this.combo = 0; // touching floor resets combo
+		} else {
+			this.footHold = false;
+			//console.log("lost foothold");
+		}
+	}
+	
+	updatePlatformCollision(platformList) {
+		for (let i = 0; i < platformList.length; ++i) {
+			let platBounds = platformList[i].getBoundary();
+			if (this.y + this.pLength < platBounds[1] + 2) { // player hitbox y pos is higher than platform
+				//console.log("higher than platform");
+				if (this.x + this.pLength > platBounds[0] && this.x < platBounds[2]) { // player hitbox x pos is above platform
+					//console.log("above platform");
+					if (this.y + this.pLength + this.vY > platBounds[1]) { //player impacting platform next frame
+						this.y = platBounds[1] - this.pLength;
+						this.vY = 0;
+						this.x += platformList[i].vX; //match platform speed
+						this.footHold = true;
+						//console.log("foothold");
+						this.combo = 0; //touching floor resets combo
+					}
+				}
+			} else if (this.y > platBounds[3]) { // player hitbox y pos is lower than platform
+				//console.log("lower than platform");
+				if (this.x + this.pLength > platBounds[0] && this.x < platBounds[2]) { //player hitbox x pos is below platform
+					//console.log("below platform");
+					if (this.y + this.vY < platBounds[3]) { // player bumping into platform next frame
+						this.y = platBounds[3] + 2;
+						this.vY = 1;
+					}
+				}
+			} else if (this.x + this.pLength < platBounds[0]) { //player can hit platform from left side
+				//console.log("left of platform");
+				if (this.x + this.pLength + this.vX > platBounds[0]) { //player hitting left side next frame
+					this.x = platBounds[0] - this.pLength - 2;
+					if (this.vX >= platformList[i].vX) { //compare player and platform x vel
+						this.vX = platformList[i].vX - 2; //align player with platform
+					}
+				}
+			} else if (this.x > platBounds[2]) {//player can hit platform from right side
+				//console.log("right of platform");
+				if (this.x + this.vX < platBounds[2]) { //player hitting right side next frame
+					this.x = platBounds[2] + 2;
+					if (this.vX <= platformList[i].vX) { //compare player and platform x vel
+						this.vX = platformList[i].vX + 2; //align player with platform
+					}
+				}
+			} else {
+				// console.error("Collision error, player within platform hitbox #", i);
+				if (this.y + (this.pLength/2) < platBounds[1] + (platformList[i].pHeight/2)) {
+					while (this.y + this.pLength > platBounds[1]) { // push above platform if player center point is above platform center
+						this.y -= 2;
+					}
+					this.vY = -1;
+				} else {
+					while (this.y < platBounds[3]) { // push below platform if player center point is below platform center
+						this.y += 2;
+					}
+					this.vY = 1;
+				}
+			}
+		}
+	}
+
+	updateEnemyCollision(enemyList) {
+		let killList = []; //stores enemies to be deleted
+		for (let i = 0; i < enemyList.length; ++i) {
+			if (enemyList[i].isAlive()) {
+				let enemyBounds = enemyList[i].getBoundary();
+				if (this.y + this.pLength < enemyBounds[1] + 2) { // player hitbox y pos is higher than enemy
+					//console.log("higher than enemy");
+					if (this.x + this.pLength > enemyBounds[0] - 5 && this.x < enemyBounds[2] + 5) { // player hitbox x pos is above enemy (+5px margin)
+						//console.log("above enemy");
+						if (this.y + this.pLength + this.vY > enemyBounds[1] + enemyList[i].vY) { //player impacting enemy next frame
+							this.vY = this.jumpV; // bounce off enemy
+							killList.push(i);
+							this.combo += 1;
+							this.score += 100 * this.combo;
+						}
+					}
+				} else if (this.y > enemyBounds[3]) { // player hitbox y pos is lower than enemy
+					//console.log("lower than enemy");
+					if (this.x + this.pLength > enemyBounds[0] && this.x < enemyBounds[2]) { //player hitbox x pos is below enemy
+						//console.log("below enemy");
+						if (this.y + this.vY < enemyBounds[3] + enemyList[i].vY) { // player bumping into enemy next frame
+							this.gameOver = true;
+						}
+					}
+				} else if (this.x + this.pLength < enemyBounds[0]) { //player can hit enemy from left side
+					//console.log("left of enemy");
+					if (this.x + this.pLength + this.vX > enemyBounds[0] + enemyList[i].vX) { //player hitting left side next frame
+						this.gameOver = true;
+					}
+				} else if (this.x > enemyBounds[2]) {//player can hit enemy from right side
+					//console.log("right of enemy");
+					if (this.x + this.vX < enemyBounds[2] + enemyList[i].vX) { //player hitting right side next frame
+						this.gameOver = true;
+					}
+				} else { // player within enemy hitbox
+					if (this.y + (this.pLength/2) < enemyBounds[1] + (enemyList[i].enemyHeight/2)) { //edge case for when player clips into top of enemy
+						this.vY = this.jumpV; // bounce off enemy
+						killList.push(i);
+						this.combo += 1;
+						this.score += 100 * combo;
+					}
+					this.gameOver = true;
+				}
+			}
+		}
+		return killList;
+	}
+
+	updateProjectileCollision(projectileList) {
+		for (let i = 0; i < projectilesList.length; ++i) {
+			let currProjectile = projectilesList[i];
+			if (this.y + this.pLength > currProjectile.y && this.y < currProjectile.y) { //player vertically aligned with projectile
+				if (this.x + this.pLength > currProjectile.x && this.x < currProjectile.x) { //player horizontally aligns
+					this.gameOver = true;
+				}
+			}
+		}
+	}
+
+	update(platformList, enemyList, projectilesList){ // returns enemy kill list
+		this.updateControls();
+		this.updateFloorCollision();
+		this.updatePlatformCollision(platformList);
+		let enemyKillList = this.updateEnemyCollision(enemyList);
+		this.updateProjectileCollision(projectilesList);
+
+		//position ticks
+		this.x += this.vX;
+		this.y += this.vY;
+		this.vY += this.gAcc;
+		this.vX *= this.drag;
+
+		if (this.x > width) {
+			this.x = -1 * this.pLength + 1;
+		} else if (this.x < -1 * this.pLength) {
+			this.x = width - 1;
+		}
+
+		return enemyKillList;
+	}
+
+	render() {
+		fill(0,0,255);
+		//console.log("player at ", this.x, this.y);
+		rect(this.x + worldSway[0] + worldShake[0], this.y + worldSway[1] + worldShake[1], this.pLength, this.pLength, 5);
+	}
+}
+
+class Platform {
+	constructor(side, pWidth, height, abSpeed) {
+		//0 = left side spawn, 1 = right side spawn
+		if (side) {
+			this.x = -0.5 * pWidth;
+			this.vX = abSpeed; //abSpeed is absolute speed
+		} else {
+			this.x = width + (0.5 * pWidth);
+			this.vX = -1 * abSpeed;
+		}
+		//platform size and y position
+		this.pWidth = pWidth;
+		this.pHeight = 45;
+		this.y = height;
+	}
+
+	getBoundary () { //returns array of length 4
+		//first 2 are coordinates for top left corner, last 2 are bottom right corner
+		return [this.x, this.y, this.x + this.pWidth, this.y + this.pHeight];
+	}
+
+	update() { //returns true as long as entity is active
+		this.x += this.vX;
+		if (this.x < -1 * this.pWidth || this.x > width + this.pWidth) {
+			return false; //platform has moved outside of window
+		}
+		return true;
+	}
+
+	render() {
+		fill(0);
+		// console.log("platform at ", this.x, this.y);
+		rect(this.x + worldSway[0] + worldShake[0], this.y + worldSway[1] + worldShake[1], this.pWidth, this.pHeight);
+	}
+}
+
+class Enemy {
+	constructor(side, typeID) {
+		this.enemyWidth = 60;
+		this.enemyHeight = 40;
+
+		//typeID: 1 = regular; 2 = jumping; 3 = hovering; 4 = shooting
+		this.type = typeID;
+
+		this.active = true; // determines if collideable by player, false during death animation
+		this.deathLength = 200; // death animation length, entity gets culled after time runs out
+		this.deathStart = -1; // tracks death time to limit length of death animation, -1 if alive
+		
+		this.timer = 0; // used for x and y velocity variance, types 1-3
+		this.gAcc = 1; // gravity acceleration, used for type 2
+		this.avgFloatHeight = height - floorHeight - this.enemyHeight - 100; // hovering reference y-coordinate, used for type 3
+		this.floatAmplitude = 150; // hovering oscillation amplitude, used for type 3
+		this.projectileTimer = int(random(100,300)); // only used for type 4
+		
+		if (this.type == 1) {
+			this.avgSpeed = 1.5; // average speed
+			this.speedVariance = 1; // speed oscillation amplitude
+		} else if (this.type == 2) {
+			this.avgSpeed = 2;
+			this.speedVariance = 1;
+		} else if (this.type == 3) {
+			this.avgSpeed = 1;
+			this.speedVariance = 0;
+		} else { //type 4
+			this.avgSpeed = 0;
+			this.speedVariance = 0;
+		}
+		
+		//0 = left side spawn, 1 = right side spawn
+		if (side) {
+			this.x = -1 * this.enemyWidth;
+			this.vX = this.avgSpeed;
+		} else {
+			this.x = width + this.enemyWidth;
+			this.vX = -1 * this.avgSpeed;
+		}
+
+		if (this.type != 3) { // type 3 is spawned higher up
+			this.y = height - floorHeight - this.enemyHeight;
+		} else { 
+			this.y = this.avgFloatHeight;
+		}
+		this.vY = 0;
+	}
+
+	update() { // does not return active state, deaths handled by player
+		if (this.active) {
+			if (this.type != 4) { // moving enemies (types 1-3)
+				if ((this.x < 0 && this.vX < 0) || (this.x + this.enemyWidth > width && this.vX > 0)) {
+					// reverse directions if touching screen edge
+					this.vX *= -1;
+				}
+				
+				if (this.vX > 0) { // vary the movement speed
+					this.vX = this.avgSpeed + (this.speedVariance * sin(this.timer / 30));
+				} else {
+					this.vX = -1 * this.avgSpeed + (this.speedVariance * sin(this.timer / 30));
+				}
+	
+				if (this.type == 2) { //jumping
+					if (this.y + this.enemyHeight > height - floorHeight) { // touching floor
+						this.vY = -7; // jumping velocity
+					} else { // not touching floor
+						this.vY += this.gAcc;
+					}
+					this.y += this.vY;
+				} else if (this.type == 3) { //hovering, no use for vY
+					this.y = this.avgFloatHeight + (this.floatAmplitude * sin(this.timer / 50));
+				}
+				this.x += this.vX;
+			} else { // type 4 slowly approaches resting position at edge of screen
+				if (this.x < width / 2) { // left side
+					this.x += (((-1/3) * this.enemyWidth) - this.x) / 40; 
+				} else { //right side
+					this.x += ((width - ((2/3) * this.enemyWidth)) - this.x) / 40;
+				}
+				if (this.projectileTimer <= 0) {
+					if (this.x < width / 2) { // left side
+						projectilesList.push(new Projectile(this.x, this.y, 4, 1));
+					} else { //right side
+						projectilesList.push(new Projectile(this.x, this.y, -4, 1));
+					}
+					this.projectileTimer = int(random(50,200))
+				}
+				this.projectileTimer -= 1;
+				//console.log(this.projectileTimer);
+			}
+		} else { // enemy is dead
+			this.x += this.vX;
+			this.y += this.vY;
+			this.vY += this.gAcc;
+		}
+		this.timer += 1;
+	}
+
+	render() {
+		let c;
+		if (this.type == 1) {
+			c = color('green');
+		} else if (this.type == 2) {
+			c = color('pink'); 
+		} else if (this.type == 3) {
+			c = color('red'); 
+		} else {
+			c = color('grey');
+		}
+
+		if (this.active) {
+			c.setAlpha(255);
+		} else { // dead enemies are transparent during death animation
+			c.setAlpha(100);
+		}
+
+		fill(c);
+		
+		// console.log("enemy at ", this.x, this.y);
+		ellipseMode(CORNER)
+		ellipse(this.x + worldSway[0] + worldShake[0], this.y + worldSway[1] + worldShake[1], this.enemyWidth, this.enemyHeight);
+	}
+
+	getBoundary () { //returns array of length 4
+		//first 2 are coordinates for top left corner, last 2 are bottom right corner
+		return [this.x, this.y, this.x + this.enemyWidth, this.y + this.enemyHeight];
+	}
+
+	die() {
+		this.active = false;
+		this.deathStart = this.timer;
+		this.vY = -7;
+	}
+
+	isAlive() {
+		return this.active;
+	}
+
+	isDeathOver() { //checks if death animation is over
+		if (this.deathStart == -1) {
+			console.error("Enemy is still alive"); // should not be called unless enemy is dead
+		}
+		return (this.timer - this.deathStart > this.deathLength);
+	}
+}
+
+class Projectile{
+	constructor(iX, iY, vX, source) {
+		this.x = iX;
+		this.y = iY;
+		this.vX = vX;
+		this.fromEnemy = source; // 1 = projectile from enemy; 0 = projectile from player
+	}
+
+	update() { //returns true if active
+		this.x += this.vX;
+		if ((this.x < 0 && this.vX < 0) || (this.x > width && this.vX > 0)) { // reached edge of screen
+			return false;
+		}
+		return true;
+	}
+
+	render() {
+		let c;
+		if (this.fromEnemy) {
+			c = color('red');
+		} else {
+			c = color('blue');
+		}
+		fill(c);
+		circle(this.x + worldSway[0] + worldShake[0], this.y + worldSway[1] + worldShake[1], 15);
+	}
+}
+
+class Particle {
+	constructor(iX, iY, vX, vY, color) {
+		this.x = iX;
+		this.y = iY;
+		this.vX = vX;
+		this.vY = vY;
+		this.color = color;
+
+		this.pSize = 5;
+		this.gAcc = 1; //particle gravity
+	}
+
+	update() {
+		this.x += this.vX;
+		this.y += this.vY;
+		this.vY += this.gAcc;
+	}
+
+	render() {
+		fill(this.color);
+		circle(this.x + worldSway[0] + worldShake[0], this.y + worldSway[1] + worldShake[1], this.pSize);
+	}
+}
+
+class DeathEffect {
+	constructor(x,y,color) {
+		this.x = x;
+		this.y = y;
+		this.color = color;
+
+		this.explodingForce = 10; // max speed at which particles can get ejected
+		this.timer = 0;
+		this.lifeTime = 200;
+		this.particleCount = 20;
+		this.particles = [];
+
+		for (let i = 0; i < this.particleCount; ++i) {
+			this.particles.push(new Particle(this.x, 
+														this.y,
+														int(random(-1 * this.explodingForce, this.explodingForce)), //random starting x & y velocities
+														int(random(-1 * this.explodingForce, this.explodingForce)),
+														this.color));
+		}
+	}
+
+	update() { //returns true as long as particle animation is active
+		if (this.timer > this.lifeTime) { // particle lifetime reached
+			return false;
+		}
+
+		for (let i = 0; i < this.particles.length; ++i) {
+			this.particles[i].update();
+		}
+		this.timer += 1;
+		return true;
+	}
+
+	render() {
+		for (let i = 0; i < this.particles.length; ++i) {
+			this.particles[i].render();
+		}
+	}
+}
